@@ -1,0 +1,10 @@
+.env
+node_modules/
+cache/
+out/
+*.wtns
+*_0000.zkey
+proof_bounty_*.json
+input_temp.json
+pot12_real.ptau
+pot12_new_*.ptau
