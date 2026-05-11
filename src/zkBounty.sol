@@ -1,0 +1,295 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+interface IExploitVerifier {
+    function verifyProof(
+        uint[2] calldata _pA,
+        uint[2][2] calldata _pB,
+        uint[2] calldata _pC,
+        uint[5] calldata _pubSignals
+    ) external view returns (bool);
+}
+
+contract zkBounty {
+    error Unauthorized();
+    error BountyNotFound();
+    error BountyNotActive();
+    error BountyAlreadyClaimed();
+    error InvalidCommitment();
+    error CommitRevealMismatch();
+    error RevealWindowNotOpen();
+    error RevealWindowExpired();
+    error ClaimTimeoutNotReached();
+    error ClaimTimeoutExpired();
+    error InvalidProof();
+    error AddressMismatch();
+    error InsufficientFund();
+    error DeadlinePassed();
+    error TransferFailed();
+    error AlreadyCommitted();
+    error InvalidDeadline();
+    error InvalidTimeout();
+    error ZeroAddress();
+    error ReentrancyGuard();
+
+    uint256 public constant MIN_REVEAL_WINDOW  = 1 hours;
+    uint256 public constant MAX_REVEAL_WINDOW  = 24 hours;
+    uint256 public constant MIN_CLAIM_TIMEOUT  = 3 days;
+    uint256 public constant MAX_CLAIM_TIMEOUT  = 90 days;
+    uint256 public constant MAX_DEADLINE       = 365 days;
+    uint256 public constant PLATFORM_FEE_BPS   = 250;
+    uint256 public constant BPS_DENOMINATOR    = 10_000;
+    uint256 public constant MAX_DEADLINE_HOURS = 8_760;
+
+    address public immutable owner;
+    address public immutable verifier;
+    address public feeRecipient;
+
+    uint256 private _bountyIdCounter;
+    uint256 private _reentrancyStatus;
+
+    struct Commitment {
+        bytes32 commitHash;
+        uint256 commitBlock;
+        uint256 revealDeadline;
+        bool    revealed;
+    }
+
+    struct Bounty {
+        address company;
+        uint256 reward;
+        uint256 deadline;
+        uint256 claimTimeout;
+        uint256 bountyId;
+        uint8   minSeverity;
+        BountyState state;
+        address researcher;
+        uint256 commitment;
+    }
+
+    enum BountyState {
+        Active,
+        PendingReveal,
+        PendingCompany,
+        Claimed,
+        Expired,
+        ForceReleased
+    }
+
+    mapping(uint256 => Bounty) public bounties;
+    mapping(uint256 => Commitment) public commitments;
+    mapping(uint256 => mapping(address => bool)) public usedProofs;
+
+    event BountyCreated(uint256 indexed bountyId, address indexed company, uint256 reward, uint256 deadline, uint256 claimTimeout);
+    event ProofCommitted(uint256 indexed bountyId, address indexed researcher, bytes32 commitHash, uint256 revealDeadline);
+    event ProofRevealed(uint256 indexed bountyId, address indexed researcher, uint256 commitment);
+    event BountyClaimed(uint256 indexed bountyId, address indexed researcher, uint256 amount);
+    event BountyRejected(uint256 indexed bountyId, address indexed company);
+    event BountyRefunded(uint256 indexed bountyId, address indexed company, uint256 amount);
+    event ForceRelease(uint256 indexed bountyId, address indexed researcher, uint256 amount);
+    event CompanyAccepted(uint256 indexed bountyId, address indexed company);
+
+    modifier nonReentrant() {
+        if (_reentrancyStatus == 2) revert ReentrancyGuard();
+        _reentrancyStatus = 2;
+        _;
+        _reentrancyStatus = 1;
+    }
+
+    modifier onlyOwner() {
+        if (msg.sender != owner) revert Unauthorized();
+        _;
+    }
+
+    modifier onlyCompany(uint256 bountyId) {
+        if (msg.sender != bounties[bountyId].company) revert Unauthorized();
+        _;
+    }
+
+    modifier bountyExists(uint256 bountyId) {
+        if (bounties[bountyId].company == address(0)) revert BountyNotFound();
+        _;
+    }
+
+    constructor(address _verifier, address _feeRecipient) {
+        if (_verifier == address(0)) revert ZeroAddress();
+        if (_feeRecipient == address(0)) revert ZeroAddress();
+        owner        = msg.sender;
+        verifier     = _verifier;
+        feeRecipient = _feeRecipient;
+        _reentrancyStatus = 1;
+    }
+
+    function createBounty(
+        uint256 deadline_hours,
+        uint256 claimTimeout,
+        uint8   minSeverity
+    ) external payable nonReentrant returns (uint256 bountyId) {
+        if (deadline_hours == 0 || deadline_hours > MAX_DEADLINE_HOURS) revert InvalidDeadline();
+        if (claimTimeout < MIN_CLAIM_TIMEOUT || claimTimeout > MAX_CLAIM_TIMEOUT) revert InvalidTimeout();
+        if (msg.value == 0) revert InsufficientFund();
+        if (minSeverity < 1 || minSeverity > 10) revert InvalidDeadline();
+
+        uint256 deadline = block.timestamp + (deadline_hours * 3600);
+        bountyId = ++_bountyIdCounter;
+
+        bounties[bountyId] = Bounty({
+            company     : msg.sender,
+            reward      : msg.value,
+            deadline    : deadline,
+            claimTimeout: claimTimeout,
+            bountyId    : bountyId,
+            minSeverity : minSeverity,
+            state       : BountyState.Active,
+            researcher  : address(0),
+            commitment  : 0
+        });
+
+        emit BountyCreated(bountyId, msg.sender, msg.value, deadline, claimTimeout);
+    }
+
+    function commitProof(uint256 bountyId, bytes32 commitHash) external bountyExists(bountyId) {
+        Bounty storage b = bounties[bountyId];
+        if (b.state != BountyState.Active) revert BountyNotActive();
+        if (block.timestamp >= b.deadline) revert DeadlinePassed();
+        if (commitments[bountyId].commitHash != bytes32(0)) revert AlreadyCommitted();
+
+        uint256 revealDeadline = block.timestamp + MAX_REVEAL_WINDOW;
+        commitments[bountyId] = Commitment({
+            commitHash    : commitHash,
+            commitBlock   : block.number,
+            revealDeadline: revealDeadline,
+            revealed      : false
+        });
+
+        b.state      = BountyState.PendingReveal;
+        b.researcher = msg.sender;
+
+        emit ProofCommitted(bountyId, msg.sender, commitHash, revealDeadline);
+    }
+
+    function revealProof(
+        uint256 bountyId,
+        uint[2]    calldata pA,
+        uint[2][2] calldata pB,
+        uint[2]    calldata pC,
+        uint[5]    calldata pubSignals,
+        bytes32 nonce
+    ) external nonReentrant bountyExists(bountyId) {
+        Bounty     storage b = bounties[bountyId];
+        Commitment storage c = commitments[bountyId];
+
+        if (b.state != BountyState.PendingReveal) revert RevealWindowNotOpen();
+        if (c.revealed) revert BountyAlreadyClaimed();
+        if (block.timestamp > c.revealDeadline) revert RevealWindowExpired();
+
+        bytes32 expectedHash = keccak256(abi.encode(pA, pB, pC, pubSignals, nonce));
+        if (expectedHash != c.commitHash) revert CommitRevealMismatch();
+        if (msg.sender != b.researcher) revert AddressMismatch();
+        if (pubSignals[2] != bountyId) revert InvalidProof();
+        if (pubSignals[3] != uint256(uint160(msg.sender))) revert AddressMismatch();
+        if (pubSignals[1] < b.minSeverity) revert InvalidProof();
+        if (usedProofs[bountyId][msg.sender]) revert BountyAlreadyClaimed();
+
+        bool proofValid = IExploitVerifier(verifier).verifyProof(pA, pB, pC, pubSignals);
+        if (!proofValid) revert InvalidProof();
+
+        usedProofs[bountyId][msg.sender] = true;
+        c.revealed   = true;
+        b.commitment = pubSignals[0];
+        b.state      = BountyState.PendingCompany;
+
+        emit ProofRevealed(bountyId, msg.sender, pubSignals[0]);
+    }
+
+    function companyAccept(uint256 bountyId) external nonReentrant bountyExists(bountyId) onlyCompany(bountyId) {
+        Bounty storage b = bounties[bountyId];
+        if (b.state != BountyState.PendingCompany) revert BountyNotActive();
+        if (block.timestamp > b.deadline + b.claimTimeout) revert ClaimTimeoutExpired();
+
+        b.state = BountyState.Claimed;
+        uint256 fee    = (b.reward * PLATFORM_FEE_BPS) / BPS_DENOMINATOR;
+        uint256 payout = b.reward - fee;
+
+        emit BountyClaimed(bountyId, b.researcher, payout);
+        emit CompanyAccepted(bountyId, msg.sender);
+
+        _safeTransfer(b.researcher, payout);
+        _safeTransfer(feeRecipient, fee);
+    }
+
+    function companyReject(uint256 bountyId) external nonReentrant bountyExists(bountyId) onlyCompany(bountyId) {
+        Bounty storage b = bounties[bountyId];
+        if (b.state != BountyState.PendingCompany) revert BountyNotActive();
+
+        delete commitments[bountyId];
+        b.state      = BountyState.Active;
+        b.researcher = address(0);
+        b.commitment = 0;
+
+        emit BountyRejected(bountyId, msg.sender);
+    }
+
+    function forceRelease(uint256 bountyId) external nonReentrant bountyExists(bountyId) {
+        Bounty storage b = bounties[bountyId];
+        if (msg.sender != b.researcher) revert Unauthorized();
+        if (b.state != BountyState.PendingCompany) revert BountyNotActive();
+        if (block.timestamp <= b.deadline + b.claimTimeout) revert ClaimTimeoutNotReached();
+
+        b.state = BountyState.ForceReleased;
+        uint256 fee    = (b.reward * PLATFORM_FEE_BPS) / BPS_DENOMINATOR;
+        uint256 payout = b.reward - fee;
+
+        emit ForceRelease(bountyId, b.researcher, payout);
+        _safeTransfer(b.researcher, payout);
+        _safeTransfer(feeRecipient, fee);
+    }
+
+    function refundExpired(uint256 bountyId) external nonReentrant bountyExists(bountyId) onlyCompany(bountyId) {
+        Bounty storage b = bounties[bountyId];
+        bool isActive        = b.state == BountyState.Active;
+        bool isRevealExpired = (b.state == BountyState.PendingReveal) && (block.timestamp > commitments[bountyId].revealDeadline);
+
+        if (!isActive && !isRevealExpired) revert BountyNotActive();
+        if (block.timestamp <= b.deadline) revert DeadlinePassed();
+
+        b.state = BountyState.Expired;
+        uint256 refund = b.reward;
+
+        emit BountyRefunded(bountyId, b.researcher, refund);
+        _safeTransfer(b.company, refund);
+    }
+
+    function _safeTransfer(address to, uint256 amount) internal {
+        if (to == address(0)) revert ZeroAddress();
+        if (amount == 0) return;
+        (bool success, bytes memory data) = to.call{value: amount}("");
+        if (!success) {
+            if (data.length > 0) {
+                assembly { revert(add(data, 32), mload(data)) }
+            }
+            revert TransferFailed();
+        }
+    }
+
+    function getBounty(uint256 bountyId) external view returns (Bounty memory) {
+        return bounties[bountyId];
+    }
+
+    function getCommitment(uint256 bountyId) external view returns (Commitment memory) {
+        return commitments[bountyId];
+    }
+
+    function canForceRelease(uint256 bountyId) external view returns (bool) {
+        Bounty storage b = bounties[bountyId];
+        return (b.state == BountyState.PendingCompany && block.timestamp > b.deadline + b.claimTimeout);
+    }
+
+    function setFeeRecipient(address newRecipient) external onlyOwner {
+        if (newRecipient == address(0)) revert ZeroAddress();
+        feeRecipient = newRecipient;
+    }
+
+    receive() external payable { revert("Use createBounty"); }
+    fallback() external payable { revert("Invalid call"); }
+}
