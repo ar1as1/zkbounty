@@ -119,28 +119,16 @@ export default function App() {
     try {
       const p = provider || new ethers.JsonRpcProvider("https://ethereum-sepolia-rpc.publicnode.com")
       const contract = new ethers.Contract(BOUNTY_ESCROW, ABI, p)
-const list = []
-let maxBounties = 100
-for (let i = 1; i <= maxBounties; i++) {
-  try {
-    const b = await contract.getBounty(i)
-    if (b.company === ethers.ZeroAddress) break
-
+      const count = await contract.bountyCount()
+      const list = []
+      for (let i = 0; i < Number(count); i++) {
+        const b = await contract.getBounty(i)
         list.push({
           id: i,
-company: b.company,
-            reward: b.reward,
-            deadline: b.deadline,
-            claimTimeout: b.claimTimeout,
-            bountyId: b.bountyId,
-            minSeverity: b.minSeverity,
-            state: b.state,
-            researcher: b.researcher,
-            commitment: b.commitment
-          })
-        } catch(e) {
-          break
-        }
+          company: b[0], researcher: b[1], reward: b[2],
+          committedHash: b[3], targetId: b[4], minSeverity: b[5],
+          status: b[6], deadline: b[7]
+        })
       }
       setBounties(list)
     } catch(e) {
@@ -148,6 +136,7 @@ company: b.company,
     }
     setRefreshing(false)
   }
+
   async function postBounty() {
     if (!wallet) return showMsg("Connect wallet first!", "error")
     setLoading(true)
@@ -224,7 +213,7 @@ company: b.company,
         <div className="grid grid-cols-3 gap-4 mb-6">
           <StatCard label="Total Bounties" value={bounties.length} sub="on Sepolia" />
           <StatCard label="Open Bounties" value={openBounties} sub="awaiting claims" />
-<StatCard label="Total Locked" value={Number(ethers.formatEther(totalLocked)).toFixed(4) + " ETH"} sub="in escrow" />
+          <StatCard label="Total Locked" value={ethers.formatEther(totalLocked) + " ETH"} sub="in escrow" />
         </div>
 
         {/* Tabs */}
