@@ -279,16 +279,5 @@ contract zkBounty is ReentrancyGuard, Pausable {
     
     // ========== CRIT-05 FIX: EMERGENCY CONTROLS ==========
     
-    
-    // ========== CRIT-05 FIX: EMERGENCY CONTROLS ==========
-    
     function pause() external onlyOwner {
-        _pause();
-        emit EmergencyPaused(msg.sender);
-    }
-    
-    function unpause() external onlyOwner {
-        _unpause();
-        emit EmergencyUnpaused(msg.sender);
-    }
 }

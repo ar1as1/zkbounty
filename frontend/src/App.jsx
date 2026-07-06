@@ -1,12 +1,17 @@
 import { useState, useEffect } from "react"
 import { ethers } from "ethers"
 
-const BOUNTY_ESCROW = "0xc2C9aD8ebC619B405Ddb4a75748b93CF7aba1b60"
+const BOUNTY_ESCROW = "0x1853Ec97dAe5D0FF897ebFFCe42aEfD9e85818F4"
 const ABI = [
-  "function postBounty(uint256 targetId, uint256 minSeverity, uint256 deadlineHours) payable returns (uint256)",
-  "function getBounty(uint256 id) view returns (tuple(address company, address researcher, uint256 reward, uint256 committedHash, uint256 targetId, uint256 minSeverity, uint8 status, uint256 deadline))",
-  "function bountyCount() view returns (uint256)",
-  "function releasePayment(uint256 bountyId)",
+  "function createBounty(uint256 deadline_hours, uint256 claimTimeout, uint8 minSeverity) payable returns (uint256)",
+  "function getBounty(uint256 bountyId) view returns (tuple(address company, uint256 reward, uint256 deadline, uint256 claimTimeout, uint256 bountyId, uint8 minSeverity, uint8 state, address researcher, uint256 commitment))",
+  "function getBountyCount() view returns (uint256)",
+  "function commitProof(uint256 bountyId, bytes32 commitHash)",
+  "function revealProof(uint256 bountyId, uint[2] pA, uint[2][2] pB, uint[2] pC, uint[5] pubSignals, bytes32 nonce)",
+  "function companyAccept(uint256 bountyId)",
+  "function companyReject(uint256 bountyId)",
+  "function forceRelease(uint256 bountyId)",
+  "function refundExpired(uint256 bountyId)",
 ]
 
 const STATUS = ["Open", "Claimed", "Revealed", "Cancelled"]
@@ -119,28 +124,16 @@ export default function App() {
     try {
       const p = provider || new ethers.JsonRpcProvider("https://ethereum-sepolia-rpc.publicnode.com")
       const contract = new ethers.Contract(BOUNTY_ESCROW, ABI, p)
-const list = []
-let maxBounties = 100
-for (let i = 1; i <= maxBounties; i++) {
-  try {
-    const b = await contract.getBounty(i)
-    if (b.company === ethers.ZeroAddress) break
-
+      const count = await contract.getBountyCount()
+      const list = []
+      for (let i = 0; i < Number(count); i++) {
+        const b = await contract.getBounty(i)
         list.push({
           id: i,
-company: b.company,
-            reward: b.reward,
-            deadline: b.deadline,
-            claimTimeout: b.claimTimeout,
-            bountyId: b.bountyId,
-            minSeverity: b.minSeverity,
-            state: b.state,
-            researcher: b.researcher,
-            commitment: b.commitment
-          })
-        } catch(e) {
-          break
-        }
+          company: b[0], researcher: b[1], reward: b[2],
+          committedHash: b[3], targetId: b[4], minSeverity: b[5],
+          status: b[6], deadline: b[7]
+        })
       }
       setBounties(list)
     } catch(e) {
@@ -148,6 +141,7 @@ company: b.company,
     }
     setRefreshing(false)
   }
+
   async function postBounty() {
     if (!wallet) return showMsg("Connect wallet first!", "error")
     setLoading(true)
@@ -224,7 +218,7 @@ company: b.company,
         <div className="grid grid-cols-3 gap-4 mb-6">
           <StatCard label="Total Bounties" value={bounties.length} sub="on Sepolia" />
           <StatCard label="Open Bounties" value={openBounties} sub="awaiting claims" />
-<StatCard label="Total Locked" value={Number(ethers.formatEther(totalLocked)).toFixed(4) + " ETH"} sub="in escrow" />
+          <StatCard label="Total Locked" value={ethers.formatEther(totalLocked) + " ETH"} sub="in escrow" />
         </div>
 
         {/* Tabs */}
