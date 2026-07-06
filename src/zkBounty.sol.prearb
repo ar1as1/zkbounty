@@ -32,11 +32,6 @@ contract zkBounty {
     error ZeroAddress();
     error ReentrancyGuard();
     error ContractPaused();
-    error InvalidSeverity();
-    error NotArbitrator();
-    error NoActiveDispute();
-    error DisputeNotExpired();
-    error DisputeWindowClosed();
 
     uint256 public constant MIN_REVEAL_WINDOW  = 1 hours;
     uint256 public constant MAX_REVEAL_WINDOW  = 24 hours;
@@ -47,7 +42,6 @@ contract zkBounty {
     uint256 public constant BPS_DENOMINATOR    = 10_000;
     uint256 public constant MAX_DEADLINE_HOURS = 8_760;
     uint256 public constant MIN_BOUNTY         = 0.001 ether;
-    uint256 public constant DISPUTE_WINDOW     = 7 days;
 
     address public immutable owner;
     address public immutable verifier;
@@ -56,13 +50,8 @@ contract zkBounty {
     uint256 private _bountyIdCounter;
     uint256 private _reentrancyStatus;
     bool public paused;
-    address public arbitrator;
-    mapping(uint256 => uint256) public disputeDeadlines;
 
     event BountyCountUpdated(uint256 newCount);
-    event DisputeOpened(uint256 indexed bountyId, address indexed company, uint256 disputeDeadline);
-    event DisputeResolved(uint256 indexed bountyId, bool researcherWins, address arbitrator);
-    event ArbitratorUpdated(address indexed newArbitrator);
 
     struct Commitment {
         bytes32 commitHash;
@@ -89,8 +78,7 @@ contract zkBounty {
         PendingCompany,
         Claimed,
         Expired,
-        ForceReleased,
-        Disputed
+        ForceReleased
     }
 
     mapping(uint256 => Bounty) public bounties;
@@ -150,7 +138,7 @@ contract zkBounty {
         if (deadline_hours == 0 || deadline_hours > MAX_DEADLINE_HOURS) revert InvalidDeadline();
         if (claimTimeout < MIN_CLAIM_TIMEOUT || claimTimeout > MAX_CLAIM_TIMEOUT) revert InvalidTimeout();
         if (msg.value < MIN_BOUNTY) revert InsufficientFund();
-        if (minSeverity < 1 || minSeverity > 10) revert InvalidSeverity();
+        if (minSeverity < 1 || minSeverity > 10) revert InvalidDeadline();
 
         uint256 deadline = block.timestamp + (deadline_hours * 3600);
         bountyId = ++_bountyIdCounter;
@@ -245,55 +233,19 @@ contract zkBounty {
         Bounty storage b = bounties[bountyId];
         if (b.state != BountyState.PendingCompany) revert BountyNotActive();
 
-        b.state = BountyState.Disputed;
-        disputeDeadlines[bountyId] = block.timestamp + DISPUTE_WINDOW;
+        delete commitments[bountyId];
+        b.state      = BountyState.Active;
+        b.researcher = address(0);
+        b.commitment = 0;
 
         emit BountyRejected(bountyId, msg.sender);
-        emit DisputeOpened(bountyId, msg.sender, disputeDeadlines[bountyId]);
-    }
-
-    function resolveDispute(uint256 bountyId, bool researcherWins) external nonReentrant bountyExists(bountyId) {
-        if (msg.sender != arbitrator) revert NotArbitrator();
-        Bounty storage b = bounties[bountyId];
-        if (b.state != BountyState.Disputed) revert NoActiveDispute();
-        if (block.timestamp > disputeDeadlines[bountyId]) revert DisputeWindowClosed();
-
-        delete disputeDeadlines[bountyId];
-
-        if (researcherWins) {
-            b.state = BountyState.Claimed;
-            uint256 fee    = (b.reward * PLATFORM_FEE_BPS) / BPS_DENOMINATOR;
-            uint256 payout = b.reward - fee;
-
-            emit DisputeResolved(bountyId, true, msg.sender);
-            emit BountyClaimed(bountyId, b.researcher, payout);
-
-            _safeTransfer(b.researcher, payout);
-            _safeTransfer(feeRecipient, fee);
-        } else {
-            delete commitments[bountyId];
-            b.state      = BountyState.Active;
-            b.researcher = address(0);
-            b.commitment = 0;
-
-            emit DisputeResolved(bountyId, false, msg.sender);
-        }
-    }
-
-    function setArbitrator(address newArbitrator) external onlyOwner {
-        if (newArbitrator == address(0)) revert ZeroAddress();
-        arbitrator = newArbitrator;
-        emit ArbitratorUpdated(newArbitrator);
     }
 
     function forceRelease(uint256 bountyId) external nonReentrant bountyExists(bountyId) {
         Bounty storage b = bounties[bountyId];
         if (msg.sender != b.researcher) revert Unauthorized();
-        bool timeoutPath = (b.state == BountyState.PendingCompany) && (block.timestamp > b.deadline + b.claimTimeout);
-        bool disputePath = (b.state == BountyState.Disputed) && (block.timestamp > disputeDeadlines[bountyId]);
-        if (b.state != BountyState.PendingCompany && b.state != BountyState.Disputed) revert BountyNotActive();
-        if (!timeoutPath && !disputePath) revert ClaimTimeoutNotReached();
-        if (disputePath) delete disputeDeadlines[bountyId];
+        if (b.state != BountyState.PendingCompany) revert BountyNotActive();
+        if (block.timestamp <= b.deadline + b.claimTimeout) revert ClaimTimeoutNotReached();
 
         b.state = BountyState.ForceReleased;
         uint256 fee    = (b.reward * PLATFORM_FEE_BPS) / BPS_DENOMINATOR;
@@ -341,8 +293,7 @@ contract zkBounty {
 
     function canForceRelease(uint256 bountyId) external view returns (bool) {
         Bounty storage b = bounties[bountyId];
-        return (b.state == BountyState.PendingCompany && block.timestamp > b.deadline + b.claimTimeout)
-            || (b.state == BountyState.Disputed && block.timestamp > disputeDeadlines[bountyId]);
+        return (b.state == BountyState.PendingCompany && block.timestamp > b.deadline + b.claimTimeout);
     }
 
     function pause() external onlyOwner {
