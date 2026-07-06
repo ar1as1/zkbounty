@@ -31,7 +31,6 @@ contract zkBounty {
     error InvalidTimeout();
     error ZeroAddress();
     error ReentrancyGuard();
-    error ContractPaused();
 
     uint256 public constant MIN_REVEAL_WINDOW  = 1 hours;
     uint256 public constant MAX_REVEAL_WINDOW  = 24 hours;
@@ -41,7 +40,6 @@ contract zkBounty {
     uint256 public constant PLATFORM_FEE_BPS   = 250;
     uint256 public constant BPS_DENOMINATOR    = 10_000;
     uint256 public constant MAX_DEADLINE_HOURS = 8_760;
-    uint256 public constant MIN_BOUNTY         = 0.001 ether;
 
     address public immutable owner;
     address public immutable verifier;
@@ -49,9 +47,6 @@ contract zkBounty {
 
     uint256 private _bountyIdCounter;
     uint256 private _reentrancyStatus;
-    bool public paused;
-
-    event BountyCountUpdated(uint256 newCount);
 
     struct Commitment {
         bytes32 commitHash;
@@ -106,11 +101,6 @@ contract zkBounty {
         _;
     }
 
-    modifier whenNotPaused() {
-        if (paused) revert ContractPaused();
-        _;
-    }
-
     modifier onlyCompany(uint256 bountyId) {
         if (msg.sender != bounties[bountyId].company) revert Unauthorized();
         _;
@@ -134,15 +124,14 @@ contract zkBounty {
         uint256 deadline_hours,
         uint256 claimTimeout,
         uint8   minSeverity
-    ) external payable nonReentrant whenNotPaused returns (uint256 bountyId) {
+    ) external payable nonReentrant returns (uint256 bountyId) {
         if (deadline_hours == 0 || deadline_hours > MAX_DEADLINE_HOURS) revert InvalidDeadline();
         if (claimTimeout < MIN_CLAIM_TIMEOUT || claimTimeout > MAX_CLAIM_TIMEOUT) revert InvalidTimeout();
-        if (msg.value < MIN_BOUNTY) revert InsufficientFund();
+        if (msg.value == 0) revert InsufficientFund();
         if (minSeverity < 1 || minSeverity > 10) revert InvalidDeadline();
 
         uint256 deadline = block.timestamp + (deadline_hours * 3600);
         bountyId = ++_bountyIdCounter;
-        emit BountyCountUpdated(_bountyIdCounter);
 
         bounties[bountyId] = Bounty({
             company     : msg.sender,
@@ -159,7 +148,7 @@ contract zkBounty {
         emit BountyCreated(bountyId, msg.sender, msg.value, deadline, claimTimeout);
     }
 
-    function commitProof(uint256 bountyId, bytes32 commitHash) external bountyExists(bountyId) whenNotPaused {
+    function commitProof(uint256 bountyId, bytes32 commitHash) external bountyExists(bountyId) {
         Bounty storage b = bounties[bountyId];
         if (b.state != BountyState.Active) revert BountyNotActive();
         if (block.timestamp >= b.deadline) revert DeadlinePassed();
@@ -294,31 +283,6 @@ contract zkBounty {
     function canForceRelease(uint256 bountyId) external view returns (bool) {
         Bounty storage b = bounties[bountyId];
         return (b.state == BountyState.PendingCompany && block.timestamp > b.deadline + b.claimTimeout);
-    }
-
-    function pause() external onlyOwner {
-        paused = true;
-    }
-
-    function unpause() external onlyOwner {
-        paused = false;
-    }
-
-    function getBountyCount() external view returns (uint256) {
-        return _bountyIdCounter;
-    }
-
-    function getActiveBounties() external view returns (uint256[] memory) {
-        uint256 count;
-        for (uint256 i = 1; i <= _bountyIdCounter; i++) {
-            if (bounties[i].state == BountyState.Active) count++;
-        }
-        uint256[] memory active = new uint256[](count);
-        uint256 idx;
-        for (uint256 i = 1; i <= _bountyIdCounter; i++) {
-            if (bounties[i].state == BountyState.Active) active[idx++] = i;
-        }
-        return active;
     }
 
     function setFeeRecipient(address newRecipient) external onlyOwner {

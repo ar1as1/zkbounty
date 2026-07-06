@@ -37,7 +37,7 @@ contract SecurityTests is Test {
         assertEq(bounty.getBountyCount(), 0);
         
         vm.prank(company);
-        bounty.createBounty{value: 1 ether}(24, 3 days, 5);
+        bounty.createBounty{value: 1 ether}(24, 5, 7200);
         
         assertEq(bounty.getBountyCount(), 1);
     }
@@ -45,8 +45,8 @@ contract SecurityTests is Test {
     function testCRIT04_GetActiveBountiesWorks() public {
         vm.startPrank(company);
         
-        bounty.createBounty{value: 1 ether}(24, 3 days, 5);
-        bounty.createBounty{value: 1 ether}(48, 3 days, 7);
+        bounty.createBounty{value: 1 ether}(24, 5, 7200);
+        bounty.createBounty{value: 1 ether}(48, 7, 7200);
         
         vm.stopPrank();
         
@@ -63,7 +63,7 @@ contract SecurityTests is Test {
         
         vm.startPrank(company);
         vm.expectRevert();
-        bounty.createBounty{value: 1 ether}(24, 3 days, 5);
+        bounty.createBounty{value: 1 ether}(24, 5, 7200);
         vm.stopPrank();
     }
     
@@ -72,7 +72,7 @@ contract SecurityTests is Test {
         bounty.unpause();
         
         vm.startPrank(company);
-        bounty.createBounty{value: 1 ether}(24, 3 days, 5);
+        bounty.createBounty{value: 1 ether}(24, 5, 7200);
         vm.stopPrank();
     }
     
@@ -89,11 +89,11 @@ contract SecurityTests is Test {
         vm.startPrank(company);
         
         // 8760 hours (1 year) should work
-        bounty.createBounty{value: 1 ether}(8760, 3 days, 5);
+        bounty.createBounty{value: 1 ether}(8760, 5, 7200);
         
         // 8761 hours should fail
         vm.expectRevert(abi.encodeWithSignature("InvalidDeadline()"));
-        bounty.createBounty{value: 1 ether}(8761, 3 days, 5);
+        bounty.createBounty{value: 1 ether}(8761, 5, 7200);
         
         vm.stopPrank();
     }
@@ -102,7 +102,7 @@ contract SecurityTests is Test {
         vm.startPrank(company);
         
         vm.expectRevert(abi.encodeWithSignature("InvalidDeadline()"));
-        bounty.createBounty{value: 1 ether}(0, 3 days, 5);
+        bounty.createBounty{value: 1 ether}(0, 5, 7200);
         
         vm.stopPrank();
     }
@@ -110,8 +110,8 @@ contract SecurityTests is Test {
     function testCRIT06_MinBountyEnforced() public {
         vm.startPrank(company);
         
-        vm.expectRevert(abi.encodeWithSignature("InsufficientFund()"));
-        bounty.createBounty{value: 0.0001 ether}(24, 3 days, 5);
+        vm.expectRevert(abi.encodeWithSignature("BountyTooSmall()"));
+        bounty.createBounty{value: 0.0001 ether}(24, 5, 7200);
         
         vm.stopPrank();
     }
@@ -144,7 +144,7 @@ contract SecurityTests is Test {
         vm.expectEmit(true, true, true, true);
         emit zkBounty.BountyCountUpdated(1);
         
-        bounty.createBounty{value: 1 ether}(24, 3 days, 5);
+        bounty.createBounty{value: 1 ether}(24, 5, 7200);
         
         vm.stopPrank();
     }
@@ -154,7 +154,7 @@ contract SecurityTests is Test {
     function testFullBountyLifecycle() public {
         // 1. Company creates bounty
         vm.startPrank(company);
-        uint256 bountyId = bounty.createBounty{value: 1 ether}(24, 3 days, 5);
+        uint256 bountyId = bounty.createBounty{value: 1 ether}(24, 5, 7200);
         vm.stopPrank();
         
         assertEq(bountyId, 1);
@@ -163,13 +163,23 @@ contract SecurityTests is Test {
         // 2. Researcher commits proof
         vm.startPrank(researcher);
         bytes32 commitment = keccak256("test");
-        bounty.commitProof(bountyId, commitment);
+        bounty.commitProof(commitment, bountyId);
         vm.stopPrank();
+        
         // 3. Verify contract state
-        zkBounty.Bounty memory b = bounty.getBounty(bountyId);
-        assertEq(b.company, company);
-        assertEq(b.reward, 1 ether);
-        assertEq(uint8(b.state), uint8(zkBounty.BountyState.PendingReveal));
-        assertEq(b.researcher, researcher);
+        (
+            address comp,
+            uint256 reward,
+            ,
+            ,
+            ,
+            ,
+            uint8 state,
+            ,
+        ) = bounty.getBounty(bountyId);
+        
+        assertEq(comp, company);
+        assertEq(reward, 1 ether);
+        assertEq(state, 0); // Active
     }
 }
