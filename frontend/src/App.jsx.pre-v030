@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react"
 import { ethers } from "ethers"
 
-const BOUNTY_ESCROW = "0xCcf15b0BF65c266dFD40c5e3A974c27333A32f33"
+const BOUNTY_ESCROW = "0x1853Ec97dAe5D0FF897ebFFCe42aEfD9e85818F4"
 const ABI = [
   "function createBounty(uint256 deadline_hours, uint256 claimTimeout, uint8 minSeverity) payable returns (uint256)",
   "function getBounty(uint256 bountyId) view returns (tuple(address company, uint256 reward, uint256 deadline, uint256 claimTimeout, uint256 bountyId, uint8 minSeverity, uint8 state, address researcher, uint256 commitment))",
@@ -12,19 +12,10 @@ const ABI = [
   "function companyReject(uint256 bountyId)",
   "function forceRelease(uint256 bountyId)",
   "function refundExpired(uint256 bountyId)",
-  "function getActiveBounties() view returns (uint256[])",
-  "function resolveDispute(uint256 bountyId, bool researcherWins)",
-  "function disputeDeadlines(uint256 bountyId) view returns (uint256)",
-  "function arbitrator() view returns (address)",
-  "function canForceRelease(uint256 bountyId) view returns (bool)",
-  "function MIN_BOUNTY() view returns (uint256)",
-  "function DISPUTE_WINDOW() view returns (uint256)",
-  "event DisputeOpened(uint256 indexed bountyId, address indexed company, uint256 disputeDeadline)",
-  "event DisputeResolved(uint256 indexed bountyId, bool researcherWins, address arbitrator)",
 ]
 
-const STATUS = ["Active", "Pending Reveal", "Pending Company", "Claimed", "Expired", "Force Released", "Disputed"]
-const STATUS_COLOR = ["bg-green-900 text-green-300", "bg-yellow-900 text-yellow-300", "bg-blue-900 text-blue-300", "bg-purple-900 text-purple-300", "bg-gray-700 text-gray-300", "bg-orange-900 text-orange-300", "bg-red-900 text-red-300"]
+const STATUS = ["Open", "Claimed", "Revealed", "Cancelled"]
+const STATUS_COLOR = ["bg-green-900 text-green-300", "bg-yellow-900 text-yellow-300", "bg-blue-900 text-blue-300", "bg-gray-700 text-gray-300"]
 const SEVERITY = ["", "Low", "Medium", "High", "Critical"]
 const SEV_COLOR = ["", "text-green-400", "text-yellow-400", "text-orange-400", "text-red-500"]
 const SEV_BG = ["", "bg-green-900", "bg-yellow-900", "bg-orange-900", "bg-red-900"]
@@ -61,8 +52,8 @@ function BountyCard({ b, onRelease, wallet }) {
 
       <div className="grid grid-cols-2 gap-3 mb-4">
         <div className="bg-gray-800 rounded-lg p-3">
-          <p className="text-xs text-gray-500">Bounty ID</p>
-          <p className="font-mono font-bold text-white">#{b.id}</p>
+          <p className="text-xs text-gray-500">Target ID</p>
+          <p className="font-mono font-bold text-white">{b.targetId?.toString()}</p>
         </div>
         <div className="bg-gray-800 rounded-lg p-3">
           <p className="text-xs text-gray-500">Deadline</p>
@@ -70,10 +61,10 @@ function BountyCard({ b, onRelease, wallet }) {
         </div>
       </div>
 
-      {b.commitment && b.commitment !== 0n && (
+      {b.committedHash && b.committedHash !== 0n && (
         <div className="bg-gray-800 rounded-lg p-3 mb-4">
           <p className="text-xs text-gray-500 mb-1">Committed Hash</p>
-          <p className="font-mono text-xs text-yellow-300 break-all">{b.commitment?.toString().slice(0,30)}...</p>
+          <p className="font-mono text-xs text-yellow-300 break-all">{b.committedHash?.toString().slice(0,30)}...</p>
         </div>
       )}
 
@@ -135,13 +126,13 @@ export default function App() {
       const contract = new ethers.Contract(BOUNTY_ESCROW, ABI, p)
       const count = await contract.getBountyCount()
       const list = []
-      for (let i = 1; i <= Number(count); i++) {
+      for (let i = 0; i < Number(count); i++) {
         const b = await contract.getBounty(i)
         list.push({
           id: i,
-          company: b[0], reward: b[1], deadline: b[2],
-          claimTimeout: b[3], bountyId: b[4], minSeverity: b[5],
-          status: b[6], researcher: b[7], commitment: b[8]
+          company: b[0], researcher: b[1], reward: b[2],
+          committedHash: b[3], targetId: b[4], minSeverity: b[5],
+          status: b[6], deadline: b[7]
         })
       }
       setBounties(list)
@@ -156,7 +147,7 @@ export default function App() {
     setLoading(true)
     try {
       const contract = new ethers.Contract(BOUNTY_ESCROW, ABI, wallet)
-      const tx = await contract.createBounty(hours, 259200, minSev, {
+      const tx = await contract.postBounty(targetId, minSev, hours, {
         value: ethers.parseEther(reward)
       })
       showMsg("TX sent... waiting confirmation", "info")
