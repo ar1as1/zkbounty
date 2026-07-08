@@ -1,78 +1,63 @@
-# zkBounty — ZK-Proof Bug Bounty Protocol
+# zkBounty
 
-> Trustless bug bounty escrow with ZK-proof verification on Ethereum.
+Trustless ZK exploit disclosure protocol on Ethereum. Researchers prove they found a vulnerability without revealing it — payment settles on-chain before disclosure.
 
-## Live Deployments (Sepolia)
+Live: https://zk.egold.dev
+
+## Deployments (Sepolia)
 
 | Contract | Address |
 |----------|---------|
+| zkBounty v0.3.0 | `0xCcf15b0BF65c266dFD40c5e3A974c27333A32f33` |
 | ExploitVerifier | `0x9bd36F8170728a3b0d98a75e6F379Ce79F3b671A` |
-| zkBounty | `0xc2C9aD8ebC619B405Ddb4a75748b93CF7aba1b60` |
 
-## How It Works
-1. Company posts bounty + locks ETH
-2. Researcher finds exploit, generates ZK proof
-3. Commit proof hash on-chain (MEV protection)
-4. Reveal proof — contract verifies on-chain
-5. Company accepts → researcher gets paid
-6. Company ignores → researcher force-releases after timeout
+## How it works
 
-No trust needed. Fully on-chain.
+1. Company posts bounty, locks ETH in escrow
+2. Researcher finds exploit, generates Groth16 proof locally
+3. Commits proof hash on-chain (MEV protection)
+4. Reveals proof — verified on-chain against the circuit
+5. Company accepts → researcher paid, minus 2.5% protocol fee
+6. Company rejects → dispute opens (see below)
+7. Company ignores → researcher force-releases after timeout
+
+## Dispute resolution
+
+A rejection no longer resets the bounty unilaterally. Instead:
+
+- `companyReject` opens a 7-day dispute window
+- A designated arbitrator (separate address from owner) rules either way:
+  researcher paid, or bounty reset to active
+- If the arbitrator never acts, the researcher can force-release
+  after the window closes
+
+Default outcome favors the researcher. No single party — company,
+owner, or arbitrator — can trap escrowed funds.
+
+## Contract surface
+
+- Commit-reveal with nonce binding (front-run resistant)
+- Proof bound to bountyId + researcher address + severity (replay-proof)
+- `MIN_BOUNTY` 0.001 ETH spam floor
+- Pausable entry points; payout/refund paths cannot be paused
+- Custom reentrancy guard, custom errors throughout
 
 ## Stack
 
 - Circuit: Circom 2.2.3 + Groth16
 - Prover: SnarkJS 0.7.6
 - Contracts: Solidity 0.8.24 + Foundry
-- Network: Ethereum Sepolia Testnet
-- Frontend: React + Vite + ethers.js + TailwindCSS
+- Frontend: React + Vite + ethers.js
 
-## Security
-
-- MEV protection via commit-reveal scheme
-- Replay attack prevention via bounty_id + claimer binding
-- Force release after claimTimeout (no fund lock)
-- abi.encode (no hash collision)
-- Reentrancy guard on all state-changing functions
-
-## Quick Start
+## Development
 
 ```bash
-git clone https://github.com/ar1as1/zkbounty
-cd zkbounty
-cp .env.example .env
-
-# Generate proof
-node prover-cli/prove.js --bounty 1 --target 42 --severity 4 --min 3
-
-# Claim bounty
-node prover-cli/claim.js --bounty 1 --proof proof_bounty_1.json
-```
-
-## Tests
-
-```bash
-forge test -vvv
-# 8/8 passing
+forge build
+forge test   # 26 tests
 ```
 
 ## Roadmap
 
-- [x] ZK Circuit (Circom + Groth16)
-- [x] On-chain Verifier (Sepolia)
-- [x] zkBounty Contract (audit fixed)
-- [x] Prover CLI
-- [x] Frontend React
-- [x] Security audit fixes
-- [ ] ETHGlobal Prague submission
-- [ ] Mainnet deployment
-- [ ] ESP Grant application
-
-## Built By
-
-eGold — ZK Security Researcher
-BlackArch Linux + ZK Proofs + Web3
-
----
-
-*Built in the garage. Zero trust. Powered by Groth16.*
+- Severity rubric enforced in-circuit
+- Proof generation via distributed gRPC prover mesh
+- Multi-party arbitration
