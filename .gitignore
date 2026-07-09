@@ -8,3 +8,8 @@ proof_bounty_*.json
 input_temp.json
 pot12_real.ptau
 pot12_new_*.ptau
+*.bak
+*.broken
+*.pre*
+*.backup
+*.old
