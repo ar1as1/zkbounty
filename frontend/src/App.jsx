@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react"
 import { ethers } from "ethers"
 
-const BOUNTY_ESCROW = "0xCcf15b0BF65c266dFD40c5e3A974c27333A32f33"
+const BOUNTY_ESCROW = "0xa0dcD04b62545910815430983529FBE5eE6c65D3"
 const ABI = [
   "function createBounty(uint256 deadline_hours, uint256 claimTimeout, uint8 minSeverity) payable returns (uint256)",
   "function getBounty(uint256 bountyId) view returns (tuple(address company, uint256 reward, uint256 deadline, uint256 claimTimeout, uint256 bountyId, uint8 minSeverity, uint8 state, address researcher, uint256 commitment))",

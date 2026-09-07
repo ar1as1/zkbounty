@@ -1,98 +1,109 @@
-
 const { buildPoseidon } = require("circomlibjs");
 const snarkjs = require("snarkjs");
+const { ethers } = require("ethers");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 
-async function main() {
-  const args = process.argv.slice(2);
-  const bountyId = args[args.indexOf("--bounty") + 1] || "0";
-  const e0 = args[args.indexOf("--e0") + 1] || "123456789";
-  const e1 = args[args.indexOf("--e1") + 1] || "987654321";
-  const e2 = args[args.indexOf("--e2") + 1] || "111222333";
-  const e3 = args[args.indexOf("--e3") + 1] || "444555666";
-  const severity = args[args.indexOf("--severity") + 1] || "4";
-  const minSeverity = args[args.indexOf("--min") + 1] || "3";
-  const targetId = args[args.indexOf("--target") + 1] || "42";
-
-  const circuitDir = path.join(__dirname, "../circuits");
-
-  console.log("=== zkBounty Prover CLI ===");
-  console.log("Bounty ID  :", bountyId);
-  console.log("Target ID  :", targetId);
-  console.log("Severity   :", severity);
-
-  // Step 1: Compute Poseidon hash
-  console.log("\n[1] Computing Poseidon hash...");
-  const poseidon = await buildPoseidon();
-  const exploit_data = [BigInt(e0), BigInt(e1), BigInt(e2), BigInt(e3)];
-  const hash = poseidon(exploit_data);
-  const hashStr = poseidon.F.toString(hash);
-  console.log("    Hash:", hashStr);
-
-  // Step 2: Build input.json
-  const input = {
-    exploit_data: [e0, e1, e2, e3],
-    severity: severity,
-    committed_hash: hashStr,
-    target_id: targetId,
-    min_severity: minSeverity
-  };
-  fs.writeFileSync("/tmp/input_temp.json", JSON.stringify(input, null, 2));
-  console.log("    Input saved.");
-
-  // Step 3: Generate witness using circom generated script
-  console.log("\n[2] Generating witness...");
-  const wasmPath = path.join(circuitDir, "exploit_knowledge_js/exploit_knowledge.wasm");
-  const wtnsPath = "/tmp/witness_temp.wtns";
-
-  // Use snarkjs.wtns.calculate correctly
-  await snarkjs.wtns.calculate(
-    input,
-    wasmPath,
-    wtnsPath
-  );
-  console.log("    Witness generated.");
-
-  // Step 4: Generate proof
-  console.log("\n[3] Generating Groth16 proof...");
-  const zkeyPath = path.join(circuitDir, "exploit_knowledge_final.zkey");
-  const { proof, publicSignals } = await snarkjs.groth16.prove(
-    zkeyPath,
-    wtnsPath
-  );
-
-  // Step 5: Verify locally
-  console.log("\n[4] Verifying proof...");
-  const vkeyPath = path.join(circuitDir, "verification_key.json");
-  const vkey = JSON.parse(fs.readFileSync(vkeyPath));
-  const valid = await snarkjs.groth16.verify(vkey, publicSignals, proof);
-  console.log("    Valid:", valid);
-
-  // Step 6: Save output
-  const output = {
-    bountyId: bountyId,
-    committedHash: hashStr,
-    proof: proof,
-    publicSignals: publicSignals,
-    timestamp: new Date().toISOString()
-  };
-  const outFile = "proof_bounty_" + bountyId + ".json";
-  fs.writeFileSync(outFile, JSON.stringify(output, null, 2));
-
-  if (valid) {
-    console.log("\n✅ PROOF GENERATED!");
-    console.log("   File:", outFile);
-    console.log("   Hash:", hashStr);
-    console.log("\n   Next:");
-    console.log("   node prover-cli/claim.js --bounty", bountyId, "--proof", outFile);
-  } else {
-    console.log("\n ERROR: Proof invalid!");
-  }
-
-  // Cleanup
-  try { fs.unlinkSync(wtnsPath); } catch(e) {}
-  try { fs.unlinkSync("/tmp/input_temp.json"); } catch(e) {}
+function arg(a, name, def) {
+  const i = a.indexOf(name);
+  if (i === -1) return def;
+  const v = a[i + 1];
+  if (v === undefined) throw new Error(`Flag ${name} tiada nilai`);
+  return v;
+}
+function randField() {
+  // 31 byte rawak → pasti < BN254 scalar field
+  return BigInt("0x" + crypto.randomBytes(31).toString("hex")).toString();
 }
 
-main().catch(console.error);
+async function main() {
+  const a = process.argv.slice(2);
+  const bountyId  = arg(a, "--bounty", null);
+  const severity  = arg(a, "--severity", null);
+  const claimer   = arg(a, "--claimer", null);   // address white-hat (0x...)
+  const secret    = arg(a, "--secret", randField());
+  const salt      = arg(a, "--salt", randField());
+
+  if (bountyId === null) throw new Error("--bounty wajib");
+  if (severity === null) throw new Error("--severity wajib");
+  if (claimer === null)  throw new Error("--claimer wajib (address white-hat)");
+  if (!ethers.isAddress(claimer)) throw new Error("--claimer bukan address sah");
+
+  const sev = Number(severity);
+  if (!Number.isInteger(sev) || sev < 1 || sev > 10) throw new Error("severity mesti 1..10");
+
+  const claimerBig = BigInt(claimer).toString();          // uint160 → field
+  const circuitDir = path.join(__dirname, "../circuits");
+
+  console.log("=== zkBounty Prover CLI (Poseidon5) ===");
+  console.log("Bounty  :", bountyId);
+  console.log("Severity:", severity);
+  console.log("Claimer :", claimer);
+
+  // Poseidon(5): secret, salt, severity, bounty_id, claimer_addr
+  const poseidon = await buildPoseidon();
+  const F = poseidon.F;
+  const commitment = F.toString(poseidon([
+    BigInt(secret), BigInt(salt), BigInt(sev), BigInt(bountyId), BigInt(claimerBig)
+  ]));
+  console.log("Commitment:", commitment);
+
+  const input = {
+    secret: secret,
+    salt: salt,
+    commitment: commitment,
+    severity: String(sev),
+    bounty_id: bountyId,
+    claimer_addr: claimerBig
+  };
+  fs.writeFileSync("/tmp/ek2_input.json", JSON.stringify(input, null, 2));
+
+  const wasmPath = path.join(circuitDir, "exploit_knowledge_js/exploit_knowledge.wasm");
+  const zkeyPath = path.join(circuitDir, "exploit_knowledge_final.zkey");
+  const vkeyPath = path.join(circuitDir, "verification_key.json");
+
+  for (const p of [wasmPath, zkeyPath, vkeyPath]) {
+    if (!fs.existsSync(p)) throw new Error(`Artifact hilang: ${p} — jalankan trusted setup dulu`);
+  }
+
+  const wtnsPath = "/tmp/ek2_witness.wtns";
+  await snarkjs.wtns.calculate(input, wasmPath, wtnsPath);
+
+  const { proof, publicSignals } = await snarkjs.groth16.prove(zkeyPath, wtnsPath);
+
+  const vkey = JSON.parse(fs.readFileSync(vkeyPath));
+  const ok = await snarkjs.groth16.verify(vkey, publicSignals, proof);
+  if (!ok) throw new Error("Proof tak sah selepas jana — berhenti");
+
+  // publicSignals layout: [commitment, severity, bounty_id, claimer_addr]
+  // Format calldata untuk revealProof
+  const cd = await snarkjs.groth16.exportSolidityCallData(proof, publicSignals);
+  const [pA, pB, pC, pub] = JSON.parse("[" + cd + "]");
+
+  // commitHash untuk commit-reveal: keccak256(abi.encode(pA,pB,pC,pubSignals,nonce))
+  const nonce = "0x" + crypto.randomBytes(32).toString("hex");
+  const coder = ethers.AbiCoder.defaultAbiCoder();
+  const commitHash = ethers.keccak256(coder.encode(
+    ["uint256[2]", "uint256[2][2]", "uint256[2]", "uint256[4]", "bytes32"],
+    [pA, pB, pC, pub, nonce]
+  ));
+
+  const out = {
+    bountyId, severity: sev, claimer,
+    commitment, secret, salt, nonce, commitHash,
+    proof: { pA, pB, pC }, publicSignals: pub,
+    timestamp: new Date().toISOString()
+  };
+  const outFile = `proof_bounty_${bountyId}.json`;
+  fs.writeFileSync(outFile, JSON.stringify(out, null, 2));
+
+  console.log("\n✅ PROOF + COMMIT-REVEAL SIAP");
+  console.log("   File       :", outFile);
+  console.log("   commitHash :", commitHash);
+  console.log("   nonce      :", nonce, "(RAHSIA sampai reveal)");
+  console.log("\n   1) commitProof(", bountyId, ", commitHash)");
+  console.log("   2) tunggu, lepas tu revealProof(", bountyId, ", pA,pB,pC, publicSignals, nonce)");
+}
+
+main().catch(e => { console.error("ERROR:", e.message); process.exit(1); });

@@ -13,3 +13,6 @@ pot12_new_*.ptau
 *.pre*
 *.backup
 *.old
+*.bak-h4
+.bak-h4-*/
+.backups-h4/

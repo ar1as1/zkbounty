@@ -6,7 +6,7 @@ interface IExploitVerifier {
         uint[2] calldata _pA,
         uint[2][2] calldata _pB,
         uint[2] calldata _pC,
-        uint[5] calldata _pubSignals
+        uint[4] calldata _pubSignals
     ) external view returns (bool);
 }
 
@@ -95,7 +95,7 @@ contract zkBounty {
 
     mapping(uint256 => Bounty) public bounties;
     mapping(uint256 => Commitment) public commitments;
-    mapping(uint256 => mapping(address => bool)) public usedProofs;
+    mapping(uint256 => mapping(uint256 => bool)) public usedCommitment;
 
     event BountyCreated(uint256 indexed bountyId, address indexed company, uint256 reward, uint256 deadline, uint256 claimTimeout);
     event ProofCommitted(uint256 indexed bountyId, address indexed researcher, bytes32 commitHash, uint256 revealDeadline);
@@ -196,7 +196,7 @@ contract zkBounty {
         uint[2]    calldata pA,
         uint[2][2] calldata pB,
         uint[2]    calldata pC,
-        uint[5]    calldata pubSignals,
+        uint[4]    calldata pubSignals,
         bytes32 nonce
     ) external nonReentrant bountyExists(bountyId) {
         Bounty     storage b = bounties[bountyId];
@@ -212,12 +212,12 @@ contract zkBounty {
         if (pubSignals[2] != bountyId) revert InvalidProof();
         if (pubSignals[3] != uint256(uint160(msg.sender))) revert AddressMismatch();
         if (pubSignals[1] < b.minSeverity) revert InvalidProof();
-        if (usedProofs[bountyId][msg.sender]) revert BountyAlreadyClaimed();
+        if (usedCommitment[bountyId][pubSignals[0]]) revert BountyAlreadyClaimed();
 
         bool proofValid = IExploitVerifier(verifier).verifyProof(pA, pB, pC, pubSignals);
         if (!proofValid) revert InvalidProof();
 
-        usedProofs[bountyId][msg.sender] = true;
+        usedCommitment[bountyId][pubSignals[0]] = true;
         c.revealed   = true;
         b.commitment = pubSignals[0];
         b.state      = BountyState.PendingCompany;
