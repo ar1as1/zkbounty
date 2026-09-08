@@ -37,6 +37,7 @@ contract zkBounty {
     error NoActiveDispute();
     error DisputeNotExpired();
     error DisputeWindowClosed();
+    error MaxDisputesReached();
 
     uint256 public constant MIN_REVEAL_WINDOW  = 1 hours;
     uint256 public constant MAX_REVEAL_WINDOW  = 24 hours;
@@ -48,6 +49,7 @@ contract zkBounty {
     uint256 public constant MAX_DEADLINE_HOURS = 8_760;
     uint256 public constant MIN_BOUNTY         = 0.001 ether;
     uint256 public constant DISPUTE_WINDOW     = 7 days;
+    uint8   public constant MAX_DISPUTE_COUNT  = 2;
 
     address public immutable owner;
     address public immutable verifier;
@@ -58,6 +60,7 @@ contract zkBounty {
     bool public paused;
     address public arbitrator;
     mapping(uint256 => uint256) public disputeDeadlines;
+    mapping(uint256 => uint8) public disputeCount;
 
     event BountyCountUpdated(uint256 newCount);
     event DisputeOpened(uint256 indexed bountyId, address indexed company, uint256 disputeDeadline);
@@ -245,6 +248,8 @@ contract zkBounty {
         Bounty storage b = bounties[bountyId];
         if (b.state != BountyState.PendingCompany) revert BountyNotActive();
 
+        if (disputeCount[bountyId] >= MAX_DISPUTE_COUNT) revert MaxDisputesReached();
+        disputeCount[bountyId] += 1;
         b.state = BountyState.Disputed;
         disputeDeadlines[bountyId] = block.timestamp + DISPUTE_WINDOW;
 
