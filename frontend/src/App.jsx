@@ -188,7 +188,15 @@ export default function App() {
   useEffect(() => { loadBounties() }, [])
 
   const openBounties = bounties.filter(b => b.status === 0n).length
-  const totalLocked = bounties.reduce((sum, b) => sum + (b.reward || 0n), 0n)
+  // Only count bounties still actually holding funds -- the contract does
+  // NOT zero b.reward on refund/claim (known LOW, see STATUS.md H5-2 note),
+  // so summing b.reward unconditionally over-counts Expired/Claimed/
+  // ForceReleased bounties that no longer hold any ETH in escrow.
+  const STILL_LOCKED_STATUS = [0n, 1n, 2n, 6n] // Active, PendingReveal, PendingCompany, Disputed
+  const totalLocked = bounties.reduce(
+    (sum, b) => (STILL_LOCKED_STATUS.includes(b.status) ? sum + (b.reward || 0n) : sum),
+    0n
+  )
 
   return (
     <div className="min-h-screen bg-gray-950 text-white font-mono">
