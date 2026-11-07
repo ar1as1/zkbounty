@@ -11,7 +11,7 @@ contract MockVerifier {
         uint[2] calldata,
         uint[2][2] calldata,
         uint[2] calldata,
-        uint[5] calldata
+        uint[4] calldata
     ) external view returns (bool) {
         return shouldPass;
     }
@@ -46,9 +46,9 @@ contract zkBountyTest is Test {
     }
 
     function _buildPubSignals(uint256 bountyId, address claimer)
-        internal pure returns (uint[5] memory)
+        internal pure returns (uint[4] memory)
     {
-        return [uint(0xDEADBEEF), uint(7), bountyId, uint256(uint160(claimer)), uint(1)];
+        return [uint(0xDEADBEEF), uint(7), bountyId, uint256(uint160(claimer))];
     }
 
     function _makeCommitHash(uint256 bountyId, address claimer, bytes32 nonce)
@@ -57,7 +57,7 @@ contract zkBountyTest is Test {
         uint[2] memory pA = [uint(1), uint(2)];
         uint[2][2] memory pB = [[uint(3), uint(4)], [uint(5), uint(6)]];
         uint[2] memory pC = [uint(7), uint(8)];
-        uint[5] memory pub = _buildPubSignals(bountyId, claimer);
+        uint[4] memory pub = _buildPubSignals(bountyId, claimer);
         return keccak256(abi.encode(pA, pB, pC, pub, nonce));
     }
 
@@ -87,9 +87,24 @@ contract zkBountyTest is Test {
         vm.prank(researcher);
         bountyContract.commitProof(id, ch);
 
+        // PATCH J1-FR: mevBot's OWN commit now succeeds (per-committer slot,
+        // isolated from researcher's) -- that is the fix, not a regression.
+        // mevBot gains no advantage: they still cannot produce a valid reveal,
+        // proven below.
         vm.prank(mevBot);
-        vm.expectRevert(zkBounty.BountyNotActive.selector);
         bountyContract.commitProof(id, ch);
+
+        // mevBot copies researcher's exact reveal calldata (reveal-snipe), but
+        // pubSignals[3] is bound to researcher's address inside the ZK proof --
+        // mevBot cannot submit it successfully from their own address.
+        uint[2] memory pA = [uint(1), uint(2)];
+        uint[2][2] memory pB = [[uint(3), uint(4)], [uint(5), uint(6)]];
+        uint[2] memory pC = [uint(7), uint(8)];
+        uint[4] memory pub = _buildPubSignals(id, researcher);
+
+        vm.prank(mevBot);
+        vm.expectRevert(zkBounty.AddressMismatch.selector);
+        bountyContract.revealProof(id, pA, pB, pC, pub, nonce);
     }
 
     function test_CRITICAL01_WrongRevealerFails() public {
@@ -100,10 +115,17 @@ contract zkBountyTest is Test {
         vm.prank(researcher);
         bountyContract.commitProof(id, ch);
 
+        // PATCH J1-FR: revealProof now reads commitments[slot][msg.sender], so
+        // mevBot must hold a matching commit in their OWN slot before the hash
+        // check even passes -- this simulates a real reveal-snipe (mevBot copies
+        // researcher's exact commitHash observed in the mempool beforehand).
+        vm.prank(mevBot);
+        bountyContract.commitProof(id, ch);
+
         uint[2] memory pA = [uint(1), uint(2)];
         uint[2][2] memory pB = [[uint(3), uint(4)], [uint(5), uint(6)]];
         uint[2] memory pC = [uint(7), uint(8)];
-        uint[5] memory pub = _buildPubSignals(id, researcher);
+        uint[4] memory pub = _buildPubSignals(id, researcher);
 
         vm.prank(mevBot);
         vm.expectRevert(zkBounty.AddressMismatch.selector);
@@ -121,7 +143,7 @@ contract zkBountyTest is Test {
         uint[2] memory pA = [uint(1), uint(2)];
         uint[2][2] memory pB = [[uint(3), uint(4)], [uint(5), uint(6)]];
         uint[2] memory pC = [uint(7), uint(8)];
-        uint[5] memory pub = _buildPubSignals(id, researcher);
+        uint[4] memory pub = _buildPubSignals(id, researcher);
 
         vm.prank(researcher);
         bountyContract.revealProof(id, pA, pB, pC, pub, nonce);
@@ -147,7 +169,7 @@ contract zkBountyTest is Test {
         uint[2] memory pA = [uint(1), uint(2)];
         uint[2][2] memory pB = [[uint(3), uint(4)], [uint(5), uint(6)]];
         uint[2] memory pC = [uint(7), uint(8)];
-        uint[5] memory pub = _buildPubSignals(id, researcher);
+        uint[4] memory pub = _buildPubSignals(id, researcher);
 
         vm.prank(researcher);
         bountyContract.revealProof(id, pA, pB, pC, pub, nonce);
@@ -168,7 +190,7 @@ contract zkBountyTest is Test {
         uint[2] memory pA = [uint(1), uint(2)];
         uint[2][2] memory pB = [[uint(3), uint(4)], [uint(5), uint(6)]];
         uint[2] memory pC = [uint(7), uint(8)];
-        uint[5] memory pub = _buildPubSignals(id, researcher);
+        uint[4] memory pub = _buildPubSignals(id, researcher);
 
         vm.prank(researcher);
         bountyContract.revealProof(id, pA, pB, pC, pub, nonce);

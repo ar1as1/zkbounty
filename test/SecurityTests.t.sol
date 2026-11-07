@@ -169,7 +169,11 @@ contract SecurityTests is Test {
         zkBounty.Bounty memory b = bounty.getBounty(bountyId);
         assertEq(b.company, company);
         assertEq(b.reward, 1 ether);
-        assertEq(uint8(b.state), uint8(zkBounty.BountyState.PendingReveal));
-        assertEq(b.researcher, researcher);
+        // PATCH J1-FR: state stays Active and researcher stays unassigned until
+        // a VALID reveal succeeds -- commitProof alone no longer claims the
+        // researcher slot (that was the front-run vulnerability). This test only
+        // exercises create+commit, not reveal, so it asserts the pre-reveal state.
+        assertEq(uint8(b.state), uint8(zkBounty.BountyState.Active));
+        assertEq(b.researcher, address(0));
     }
 }
