@@ -27,6 +27,7 @@ contract zkBounty {
     error DeadlinePassed();
     error TransferFailed();
     error AlreadyCommitted();
+    error NotCommitted();
     error InvalidDeadline();
     error InvalidTimeout();
     error ZeroAddress();
@@ -97,7 +98,12 @@ contract zkBounty {
     }
 
     mapping(uint256 => Bounty) public bounties;
-    mapping(uint256 => Commitment) public commitments;
+    mapping(uint256 => uint256) public commitEpoch;
+    mapping(bytes32 => mapping(address => Commitment)) public commitments;
+
+    function _slot(uint256 bountyId) internal view returns (bytes32) {
+        return keccak256(abi.encode(bountyId, commitEpoch[bountyId]));
+    }
     mapping(uint256 => mapping(uint256 => bool)) public usedCommitment;
 
     event BountyCreated(uint256 indexed bountyId, address indexed company, uint256 reward, uint256 deadline, uint256 claimTimeout);
@@ -178,18 +184,21 @@ contract zkBounty {
         Bounty storage b = bounties[bountyId];
         if (b.state != BountyState.Active) revert BountyNotActive();
         if (block.timestamp >= b.deadline) revert DeadlinePassed();
-        if (commitments[bountyId].commitHash != bytes32(0)) revert AlreadyCommitted();
+        bytes32 slot = _slot(bountyId);
+        if (commitments[slot][msg.sender].commitHash != bytes32(0)) revert AlreadyCommitted();
 
         uint256 revealDeadline = block.timestamp + MAX_REVEAL_WINDOW;
-        commitments[bountyId] = Commitment({
+        commitments[slot][msg.sender] = Commitment({
             commitHash    : commitHash,
             commitBlock   : block.number,
             revealDeadline: revealDeadline,
             revealed      : false
         });
 
-        b.state      = BountyState.PendingReveal;
-        b.researcher = msg.sender;
+        // NOTE (PATCH J1-FR): b.state / b.researcher NO LONGER set here.
+        // Bounty stays Active during the whole commit+reveal race; state only
+        // transitions on a VALID reveal (see revealProof). This is what stops
+        // a garbage front-run commit from locking out honest researchers.
 
         emit ProofCommitted(bountyId, msg.sender, commitHash, revealDeadline);
     }
@@ -203,15 +212,19 @@ contract zkBounty {
         bytes32 nonce
     ) external nonReentrant bountyExists(bountyId) {
         Bounty     storage b = bounties[bountyId];
-        Commitment storage c = commitments[bountyId];
+        bytes32 slot = _slot(bountyId);
+        Commitment storage c = commitments[slot][msg.sender];
 
-        if (b.state != BountyState.PendingReveal) revert RevealWindowNotOpen();
+        if (c.commitHash == bytes32(0)) revert NotCommitted();
+        // PATCH J1-FR: win condition is 'bounty still Active' (no one has won yet),
+        // not 'this address holds the global PendingReveal slot' — that slot no
+        // longer exists. First VALID reveal flips state and locks out the rest.
+        if (b.state != BountyState.Active) revert RevealWindowNotOpen();
         if (c.revealed) revert BountyAlreadyClaimed();
         if (block.timestamp > c.revealDeadline) revert RevealWindowExpired();
 
         bytes32 expectedHash = keccak256(abi.encode(pA, pB, pC, pubSignals, nonce));
         if (expectedHash != c.commitHash) revert CommitRevealMismatch();
-        if (msg.sender != b.researcher) revert AddressMismatch();
         if (pubSignals[2] != bountyId) revert InvalidProof();
         if (pubSignals[3] != uint256(uint160(msg.sender))) revert AddressMismatch();
         if (pubSignals[1] < b.minSeverity) revert InvalidProof();
@@ -223,6 +236,7 @@ contract zkBounty {
         usedCommitment[bountyId][pubSignals[0]] = true;
         c.revealed   = true;
         b.commitment = pubSignals[0];
+        b.researcher = msg.sender;   // PATCH J1-FR: assigned on WIN, not on commit
         b.state      = BountyState.PendingCompany;
 
         emit ProofRevealed(bountyId, msg.sender, pubSignals[0]);
@@ -276,7 +290,12 @@ contract zkBounty {
             _safeTransfer(b.researcher, payout);
             _safeTransfer(feeRecipient, fee);
         } else {
-            delete commitments[bountyId];
+            // PATCH J1-FR: commitments is now per-(bountyId,epoch,address); a single
+            // mapping key can't be wiped in Solidity. Bump epoch instead so every old
+            // commit slot (incl. the losing researcher's own, revealed=true) becomes
+            // unreachable and the reopened round starts with fresh slots. Old slots
+            // are orphaned storage, not a fund-safety issue.
+            commitEpoch[bountyId] += 1;
             b.state      = BountyState.Active;
             b.researcher = address(0);
             b.commitment = 0;
@@ -311,10 +330,10 @@ contract zkBounty {
 
     function refundExpired(uint256 bountyId) external nonReentrant bountyExists(bountyId) onlyCompany(bountyId) {
         Bounty storage b = bounties[bountyId];
-        bool isActive        = b.state == BountyState.Active;
-        bool isRevealExpired = (b.state == BountyState.PendingReveal) && (block.timestamp > commitments[bountyId].revealDeadline);
-
-        if (!isActive && !isRevealExpired) revert BountyNotActive();
+        // PATCH J1-FR: PendingReveal is never entered pre-claim anymore (commitProof
+        // no longer sets it) — 'nobody won yet' is fully captured by state==Active,
+        // whether zero commits, garbage commits, or expired per-committer windows.
+        if (b.state != BountyState.Active) revert BountyNotActive();
         if (block.timestamp <= b.deadline) revert DeadlinePassed();
 
         b.state = BountyState.Expired;
@@ -340,8 +359,8 @@ contract zkBounty {
         return bounties[bountyId];
     }
 
-    function getCommitment(uint256 bountyId) external view returns (Commitment memory) {
-        return commitments[bountyId];
+    function getCommitment(uint256 bountyId, address committer) external view returns (Commitment memory) {
+        return commitments[_slot(bountyId)][committer];
     }
 
     function canForceRelease(uint256 bountyId) external view returns (bool) {
