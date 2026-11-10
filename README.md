@@ -8,7 +8,7 @@ Live: https://zk.egold.dev
 
 | Contract | Address |
 |----------|---------|
-| zkBounty v0.3.0 | `0xCcf15b0BF65c266dFD40c5e3A974c27333A32f33` |
+| zkBounty v0.6 | `0x32F8e9Ba3b43586A34F9ba0CB2325433a23943F6` |
 | ExploitVerifier | `0x9bd36F8170728a3b0d98a75e6F379Ce79F3b671A` |
 
 ## How it works
@@ -53,7 +53,7 @@ owner, or arbitrator — can trap escrowed funds.
 
 ```bash
 forge build
-forge test   # 26 tests
+forge test   # 28 tests
 ```
 
 ## Roadmap
