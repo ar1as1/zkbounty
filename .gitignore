@@ -18,3 +18,4 @@ pot12_new_*.ptau
 .backups-h4/
 *.bak-*
 *.bak
+.zkb-test*
