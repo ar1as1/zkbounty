@@ -16,3 +16,8 @@ pot12_new_*.ptau
 *.bak-h4
 .bak-h4-*/
 .backups-h4/
+
+.env
+.env.*
+.zkb-test.env
+*.bak-*
